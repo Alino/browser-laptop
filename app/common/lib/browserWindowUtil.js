@@ -1,13 +1,54 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
 
-let { screen, remote, nativeImage } = require('electron')
-const { isDarwin } = require('./platformUtil.js')
+let { screen, remote, nativeImage, BrowserWindow } = require('electron')
+const { isDarwin, isLinux } = require('./platformUtil.js')
 
 // work with both in-process api and inter-process api
 if (!screen && remote) {
   screen = remote.screen
+}
+
+// assume Windows and macOS have 0px frame sizes
+let _frameSizeOp = !isLinux() ? Promise.resolve({ left: 0, top: 0 }) : null
+
+function calculateWindowFrameSize () {
+  console.time('getWindowFrameSize')
+  return new Promise(function (resolve, reject) {
+    const testWindow = new BrowserWindow({
+      width: 0,
+      height: 0,
+      minimumWidth: 0,
+      minimumHeight: 0,
+      center: true,
+      show: false,
+      frame: true
+    })
+    const initial = testWindow.getPosition()
+    testWindow.once('show', () => {
+      testWindow.once('move', () => {
+        console.log('getFrameSize move', initial, testWindow.getPosition())
+        const afterShown = testWindow.getPosition()
+        testWindow.hide()
+        console.timeEnd('getWindowFrameSize')
+        testWindow.close()
+        resolve({
+          left: afterShown[0] - initial[0],
+          top: afterShown[1] - initial[1]
+        })
+      })
+    })
+    testWindow.showInactive()
+  })
+}
+
+function getWindowFrameSizeOp () {
+  // do not start calculating until something has asked for the data,
+  // but cache the result (only perform the calculation once)
+  _frameSizeOp = _frameSizeOp || calculateWindowFrameSize()
+  return _frameSizeOp
 }
 
 /**
@@ -51,13 +92,11 @@ function getWindowClientPointAtCursor (browserWindow) {
  * @param {*} screenPoint - the screen position
  * @param {*} clientPoint - the client position
  */
-function getWindowPositionForClientPointAtScreenPoint (browserWindow, screenPoint, clientPoint) {
-  const contentPosition = browserWindow.getContentBounds()
-  const framePosition = browserWindow.getBounds()
-  const frameLeftSize = contentPosition.x - framePosition.x
-  const frameTopSize = contentPosition.y - framePosition.y
-  const x = Math.floor(screenPoint.x - clientPoint.x + frameLeftSize)
-  const y = Math.floor(screenPoint.y - clientPoint.y + frameTopSize)
+async function getWindowPositionForClientPointAtScreenPoint (screenPoint, clientPoint) {
+  const frameSize = await getWindowFrameSizeOp()
+  console.log('frameSize', frameSize)
+  const x = Math.floor(screenPoint.x - clientPoint.x - frameSize.left)
+  const y = Math.floor(screenPoint.y - clientPoint.y - frameSize.top)
   return { x, y }
 }
 
@@ -68,8 +107,8 @@ function getWindowPositionForClientPointAtScreenPoint (browserWindow, screenPoin
  *
  * @param {*} clientPoint - the client position
  */
-function getWindowPositionForClientPointAtCursor (browserWindow, clientPoint) {
-  return getWindowPositionForClientPointAtScreenPoint(browserWindow, screen.getCursorScreenPoint(), clientPoint)
+function getWindowPositionForClientPointAtCursor (clientPoint) {
+  return getWindowPositionForClientPointAtScreenPoint(screen.getCursorScreenPoint(), clientPoint)
 }
 
 function moveClientPositionToMouseCursor (browserWindow, clientX, clientY, {
@@ -79,8 +118,8 @@ function moveClientPositionToMouseCursor (browserWindow, clientX, clientY, {
   return moveClientPositionToScreenPoint(browserWindow, clientX, clientY, cursorScreenPoint.x, cursorScreenPoint.y, { animate })
 }
 
-function moveClientPositionToScreenPoint (browserWindow, clientX, clientY, screenX, screenY, { animate = false } = {}) {
-  const screenPoint = getWindowPositionForClientPointAtScreenPoint(browserWindow, { x: screenX, screenY }, { x: clientX, clientY })
+async function moveClientPositionToScreenPoint (browserWindow, clientX, clientY, screenX, screenY, { animate = false } = {}) {
+  const screenPoint = await getWindowPositionForClientPointAtScreenPoint({ x: screenX, y: screenY }, { x: clientX, y: clientY })
   browserWindow.setPosition(screenPoint.x, screenPoint.y, animate)
 }
 
